@@ -22,10 +22,13 @@ def save_markdown(post, directory):
     content_html = post['content']
     content_md = md(content_html)
     publish_date = post['published'][:10]  # Extract YYYY-MM-DD from the published date
+    original_url = post['url']  # Get the original URL of the post
     filename = f"{publish_date}_{title.replace(' ', '_').replace('/', '_')}.md"
     filepath = os.path.join(directory, filename)
     with open(filepath, 'w', encoding='utf-8') as f:
-        f.write(f"# {title}\n\n{content_md}")
+        f.write(f"# {title}\n\n")
+        f.write(f"> Original URL: {original_url}\n\n")  # Add the original URL
+        f.write(content_md)
 
 def main():
     parser = argparse.ArgumentParser(description="Export Blogspot posts to Markdown files.")
