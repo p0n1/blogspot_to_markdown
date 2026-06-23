@@ -9,8 +9,16 @@ dependencies = [
     "requests==2.32.3",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
 [project.scripts]
 blogspot-to-markdown = "blogspot_to_markdown.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [build-system]
 requires = ["hatchling"]
