@@ -1,3 +1,10 @@
 venv/
+.venv/
+__pycache__/
+*.py[cod]
 markdown_posts/
 blogspot_archive/
+build/
+dist/
+*.egg-info/
+.ruff_cache/
