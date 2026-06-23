@@ -5,7 +5,7 @@ import logging
 import os
 from pathlib import Path
 
-from .exporter import export_blog
+from .exporter import BloggerExportError, export_blog
 
 API_KEY_ENV_VAR = "BLOGGER_API_KEY"
 ENV_FILE = Path(".env")
@@ -29,6 +29,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("markdown_posts"),
         type=Path,
         help="Directory to save Markdown files.",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite changed existing exports instead of writing conflict copies.",
     )
     return parser
 
@@ -82,5 +87,14 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     configure_logging()
-    export_blog(args.blog_url, api_key, args.output_dir)
+    try:
+        export_blog(
+            args.blog_url,
+            api_key,
+            args.output_dir,
+            overwrite=args.overwrite,
+        )
+    except BloggerExportError as exc:
+        logging.error("%s", exc)
+        return 1
     return 0
