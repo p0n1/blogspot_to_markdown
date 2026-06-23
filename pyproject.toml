@@ -5,6 +5,7 @@ description = "Export Blogspot posts to Markdown files."
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
+    "beautifulsoup4>=4.12",
     "markdownify==0.13.1",
     "PyYAML>=6.0",
     "requests==2.32.3",

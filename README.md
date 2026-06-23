@@ -9,6 +9,7 @@ Export posts from a Blogspot blog to Markdown files. The tool fetches posts with
 - Converts HTML content to Markdown
 - Saves each post as a separate Markdown file
 - Writes YAML front matter with the post title, dates, source URL, Blogger ID, and labels
+- Optionally archives remote images locally for offline Markdown
 - Sanitizes filenames and avoids overwriting local edits during repeated exports
 
 ## Prerequisites
@@ -41,11 +42,25 @@ Arguments:
 - `--api-key`: Blogger API key. If omitted, the CLI reads `BLOGGER_API_KEY`
 - `--output-dir`: directory where Markdown files will be saved, defaulting to `markdown_posts`
 - `--overwrite`: replace changed existing exports instead of writing conflict copies
+- `--archive-assets`: download remote images and rewrite Markdown image links to local files
+- `--archive-existing-assets`: skip Blogger API calls and only localize images in existing Markdown files under `--output-dir`
 
 Example:
 
 ```sh
 uv run blogspot-to-markdown --blog-url https://example.blogspot.com --api-key YOUR_API_KEY --output-dir my_blog_posts
+```
+
+To make an export usable offline, include remote image archiving:
+
+```sh
+uv run blogspot-to-markdown --blog-url https://example.blogspot.com --api-key YOUR_API_KEY --output-dir my_blog_posts --archive-assets
+```
+
+To localize images in an existing export without fetching Blogger posts:
+
+```sh
+uv run blogspot-to-markdown --archive-existing-assets --output-dir my_blog_posts --overwrite
 ```
 
 Or provide the key with an environment variable:
@@ -115,3 +130,19 @@ Repeated exports are idempotent when Blogger post IDs are available in front mat
 - Changed posts keep the existing file and write a `_conflict` copy by default.
 - `--overwrite` replaces the matched existing file with the latest generated content.
 - Legacy files in the old heading plus `Original URL` format are upgraded in place only when they exactly match the old generated output.
+
+## Asset archiving
+
+When `--archive-assets` is enabled, the exporter downloads HTTP(S) image references and rewrites Markdown image links to point at local files. Assets are stored under the blog output directory:
+
+```text
+my_blog_posts/
+  _assets/
+    manifest.yml
+    <blogger-id-or-file-stem>/
+      001_<url-hash>_<safe-name>.jpg
+```
+
+The manifest records each original URL, local path, download status, content type, byte size, and SHA-256 hash. If a download fails, the Markdown keeps the original remote URL, the failure is logged, and the manifest records the failed URL.
+
+For Blogger thumbnail images linked to a larger Blogger image, the exporter archives the linked larger image and rewrites both the image source and image link to the local copy. Non-image links around images are preserved while the inner image is localized.

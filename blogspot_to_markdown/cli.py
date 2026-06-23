@@ -5,7 +5,11 @@ import logging
 import os
 from pathlib import Path
 
-from .exporter import BloggerExportError, export_blog
+from .exporter import (
+    BloggerExportError,
+    archive_existing_markdown_assets,
+    export_blog,
+)
 
 API_KEY_ENV_VAR = "BLOGGER_API_KEY"
 ENV_FILE = Path(".env")
@@ -17,7 +21,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--blog-url",
-        required=True,
         help="URL of the Blogspot blog to export.",
     )
     parser.add_argument(
@@ -34,6 +37,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--overwrite",
         action="store_true",
         help="Overwrite changed existing exports instead of writing conflict copies.",
+    )
+    parser.add_argument(
+        "--archive-assets",
+        action="store_true",
+        help="Download remote images and rewrite Markdown image links to local files.",
+    )
+    parser.add_argument(
+        "--archive-existing-assets",
+        action="store_true",
+        help="Only scan existing Markdown files in --output-dir and localize images.",
     )
     return parser
 
@@ -79,6 +92,14 @@ def resolve_api_key(cli_value: str | None) -> str | None:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    configure_logging()
+    if args.archive_existing_assets:
+        archive_existing_markdown_assets(args.output_dir, overwrite=args.overwrite)
+        return 0
+
+    if not args.blog_url:
+        parser.error("--blog-url is required unless --archive-existing-assets is used.")
+
     api_key = resolve_api_key(args.api_key)
     if not api_key:
         parser.error(
@@ -86,13 +107,13 @@ def main(argv: list[str] | None = None) -> int:
             "in the environment or .env."
         )
 
-    configure_logging()
     try:
         export_blog(
             args.blog_url,
             api_key,
             args.output_dir,
             overwrite=args.overwrite,
+            archive_assets=args.archive_assets,
         )
     except BloggerExportError as exc:
         logging.error("%s", exc)

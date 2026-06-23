@@ -15,11 +15,15 @@ class StubResponse:
         payload: Any,
         *,
         status_code: int = 200,
+        content: bytes = b"",
+        headers: dict[str, str] | None = None,
         json_error: ValueError | None = None,
         http_error: bool = False,
     ) -> None:
         self.payload = payload
         self.status_code = status_code
+        self.content = content
+        self.headers = headers or {}
         self.json_error = json_error
         self.http_error = http_error
 
@@ -60,6 +64,16 @@ def read_markdown(path: Path) -> tuple[dict[str, Any], str]:
     metadata = yaml.safe_load(front_matter)
     assert isinstance(metadata, dict)
     return metadata, body
+
+
+def read_asset_manifest(path: Path) -> dict[str, Any]:
+    payload = yaml.safe_load(
+        (path / exporter.ASSET_DIR_NAME / exporter.ASSET_MANIFEST_NAME).read_text(
+            encoding="utf-8",
+        )
+    )
+    assert isinstance(payload, dict)
+    return payload
 
 
 def test_fetch_posts_follows_pagination(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -228,6 +242,265 @@ def test_save_markdown_sanitizes_filename_and_content(tmp_path: Path) -> None:
     assert metadata["title"] == " A/B: C? * D\tE\nF "
     assert "Hello **world**\n" in body
     assert "Original URL" not in body
+
+
+def test_save_markdown_archives_remote_images(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    image_url = "https://example.com/images/chart.png"
+    image_bytes = b"png-bytes"
+
+    def fake_get(url: str, timeout: int) -> StubResponse:
+        assert url == image_url
+        assert timeout == exporter.REQUEST_TIMEOUT_SECONDS
+        return StubResponse(
+            {},
+            content=image_bytes,
+            headers={"Content-Type": "image/png"},
+        )
+
+    monkeypatch.setattr(exporter.requests, "get", fake_get)
+
+    path = exporter.save_markdown(
+        make_post("With Image", f'<p><img alt="Chart" src="{image_url}"></p>'),
+        tmp_path,
+        archive_assets=True,
+    )
+
+    text = path.read_text(encoding="utf-8")
+    manifest = read_asset_manifest(tmp_path)
+    asset = manifest["assets"][0]
+
+    assert manifest["version"] == 1
+    assert asset["original_url"] == image_url
+    assert asset["status"] == "downloaded"
+    assert asset["content_type"] == "image/png"
+    assert asset["size_bytes"] == len(image_bytes)
+    assert asset["sha256"]
+    assert asset["local_path"].startswith("_assets/post-123/")
+    assert asset["local_path"].endswith("_chart.png")
+    assert (tmp_path / asset["local_path"]).read_bytes() == image_bytes
+    assert image_url not in text
+    assert f"![Chart]({asset['local_path']})" in text
+
+
+def test_save_markdown_reuses_archived_images_on_rerun(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    image_url = "https://example.com/images/chart.png"
+    calls: list[str] = []
+
+    def fake_get(url: str, timeout: int) -> StubResponse:
+        calls.append(url)
+        return StubResponse(
+            {},
+            content=b"image",
+            headers={"Content-Type": "image/png"},
+        )
+
+    monkeypatch.setattr(exporter.requests, "get", fake_get)
+    post = make_post("With Image", f'<img src="{image_url}">')
+
+    first_path = exporter.save_markdown(post, tmp_path, archive_assets=True)
+    second_path = exporter.save_markdown(post, tmp_path, archive_assets=True)
+
+    assert second_path == first_path
+    assert calls == [image_url]
+    assert len(list((tmp_path / exporter.ASSET_DIR_NAME).glob("post-123/*.png"))) == 1
+
+
+def test_save_markdown_archives_outer_blogger_image_link(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    thumbnail_url = "https://blogger.googleusercontent.com/img/x/s320/thumb.jpg"
+    full_url = "https://blogger.googleusercontent.com/img/x/s1600/full.jpg"
+    calls: list[str] = []
+
+    def fake_get(url: str, timeout: int) -> StubResponse:
+        calls.append(url)
+        return StubResponse(
+            {},
+            content=b"full-image",
+            headers={"Content-Type": "image/jpeg"},
+        )
+
+    monkeypatch.setattr(exporter.requests, "get", fake_get)
+
+    path = exporter.save_markdown(
+        make_post(
+            "Linked Image",
+            f'<a href="{full_url}"><img alt="Full" src="{thumbnail_url}"></a>',
+        ),
+        tmp_path,
+        archive_assets=True,
+    )
+
+    text = path.read_text(encoding="utf-8")
+    asset = read_asset_manifest(tmp_path)["assets"][0]
+
+    assert calls == [full_url]
+    assert asset["original_url"] == full_url
+    assert f"[![Full]({asset['local_path']})]({asset['local_path']})" in text
+    assert thumbnail_url not in text
+    assert full_url not in text
+
+
+def test_save_markdown_follows_html_image_wrapper(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    wrapper_url = "https://blogger.googleusercontent.com/img/x/s1600-h/photo.jpg"
+    resolved_url = "https://lh3.googleusercontent.com/blogger_img/photo"
+    calls: list[str] = []
+
+    def fake_get(url: str, timeout: int) -> StubResponse:
+        calls.append(url)
+        if url == wrapper_url:
+            return StubResponse(
+                {},
+                content=f'<html><body><img src="{resolved_url}"></body></html>'.encode(),
+                headers={"Content-Type": "text/html"},
+            )
+        assert url == resolved_url
+        return StubResponse(
+            {},
+            content=b"\xff\xd8\xffimage",
+            headers={"Content-Type": "image/jpeg"},
+        )
+
+    monkeypatch.setattr(exporter.requests, "get", fake_get)
+
+    path = exporter.save_markdown(
+        make_post("Wrapped Image", f'<img src="{wrapper_url}">'),
+        tmp_path,
+        archive_assets=True,
+    )
+
+    asset = read_asset_manifest(tmp_path)["assets"][0]
+
+    assert calls == [wrapper_url, resolved_url]
+    assert asset["original_url"] == wrapper_url
+    assert asset["content_type"] == "image/jpeg"
+    assert (tmp_path / asset["local_path"]).read_bytes() == b"\xff\xd8\xffimage"
+    assert wrapper_url not in path.read_text(encoding="utf-8")
+
+
+def test_save_markdown_keeps_non_image_link_around_local_image(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    image_url = "https://example.com/cover.jpg"
+    link_url = "https://example.com/book"
+
+    def fake_get(url: str, timeout: int) -> StubResponse:
+        assert url == image_url
+        return StubResponse(
+            {},
+            content=b"cover",
+            headers={"Content-Type": "image/jpeg"},
+        )
+
+    monkeypatch.setattr(exporter.requests, "get", fake_get)
+
+    path = exporter.save_markdown(
+        make_post("Book", f'<a href="{link_url}"><img src="{image_url}"></a>'),
+        tmp_path,
+        archive_assets=True,
+    )
+
+    text = path.read_text(encoding="utf-8")
+    asset = read_asset_manifest(tmp_path)["assets"][0]
+
+    assert f"[![]({asset['local_path']})]({link_url})" in text
+    assert image_url not in text
+
+
+def test_save_markdown_records_asset_failures_without_failing_export(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    image_url = "https://example.com/missing.png"
+
+    def fake_get(url: str, timeout: int) -> StubResponse:
+        raise exporter.requests.Timeout("timed out")
+
+    monkeypatch.setattr(exporter.requests, "get", fake_get)
+
+    path = exporter.save_markdown(
+        make_post("Missing Image", f'<img src="{image_url}">'),
+        tmp_path,
+        archive_assets=True,
+    )
+
+    text = path.read_text(encoding="utf-8")
+    asset = read_asset_manifest(tmp_path)["assets"][0]
+
+    assert image_url in text
+    assert asset == {
+        "original_url": image_url,
+        "status": "failed",
+        "error": "Image download failed before receiving a usable response.",
+    }
+
+
+def test_archive_existing_markdown_assets_rewrites_legacy_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    image_url = "https://pbs.twimg.com/media/GxnNURIWkAAZpZ_?format=jpg&name=large"
+    path = tmp_path / "Legacy.md"
+    path.write_text(f"# Legacy\n\n![Chart]({image_url})\n", encoding="utf-8")
+
+    def fake_get(url: str, timeout: int) -> StubResponse:
+        assert url == image_url
+        return StubResponse(
+            {},
+            content=b"jpg-bytes",
+            headers={"Content-Type": "image/jpeg"},
+        )
+
+    monkeypatch.setattr(exporter.requests, "get", fake_get)
+
+    summary = exporter.archive_existing_markdown_assets(tmp_path, overwrite=True)
+
+    text = path.read_text(encoding="utf-8")
+    asset = read_asset_manifest(tmp_path)["assets"][0]
+
+    assert summary.scanned == 1
+    assert summary.rewritten == 1
+    assert summary.downloaded == 1
+    assert asset["local_path"].startswith("_assets/Legacy/")
+    assert asset["local_path"].endswith(".jpg")
+    assert image_url not in text
+    assert f"![Chart]({asset['local_path']})" in text
+
+
+def test_archive_existing_markdown_assets_preserves_original_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    image_url = "https://example.com/localize.png"
+    path = tmp_path / "Legacy.md"
+    path.write_text(f"# Legacy\n\n![Chart]({image_url})\n", encoding="utf-8")
+
+    def fake_get(url: str, timeout: int) -> StubResponse:
+        return StubResponse(
+            {},
+            content=b"png-bytes",
+            headers={"Content-Type": "image/png"},
+        )
+
+    monkeypatch.setattr(exporter.requests, "get", fake_get)
+
+    summary = exporter.archive_existing_markdown_assets(tmp_path)
+    conflict_path = tmp_path / "Legacy_conflict.md"
+
+    assert summary.conflicts == 1
+    assert image_url in path.read_text(encoding="utf-8")
+    assert image_url not in conflict_path.read_text(encoding="utf-8")
 
 
 def test_save_markdown_preserves_readable_unicode(tmp_path: Path) -> None:

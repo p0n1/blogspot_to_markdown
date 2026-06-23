@@ -24,6 +24,7 @@ name = "blogspot-to-markdown"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "beautifulsoup4" },
     { name = "markdownify" },
     { name = "pyyaml" },
     { name = "requests" },
@@ -37,6 +38,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "beautifulsoup4", specifier = ">=4.12" },
     { name = "markdownify", specifier = "==0.13.1" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "requests", specifier = "==2.32.3" },
